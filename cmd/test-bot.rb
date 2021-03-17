@@ -59,6 +59,10 @@ module Homebrew
              description: "Only run the tap syntax check step."
       switch "--only-formulae",
              description: "Only run the formulae steps."
+      switch "--only-formulae-bottle",
+             description: "Only run the formulae bottle step."
+      switch "--only-formulae-dependents",
+             description: "Only run the formulae dependents step."
       switch "--only-cleanup-after",
              description: "Only run the post-cleanup step. Needs `--cleanup`."
       conflicts "--only-cleanup-before", "--only-setup", "--only-tap-syntax",

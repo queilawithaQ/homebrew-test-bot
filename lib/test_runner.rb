@@ -2,9 +2,12 @@
 
 require_relative "test"
 require_relative "test_cleanup"
+require_relative "test_formulae"
 require_relative "tests/cleanup_after"
 require_relative "tests/cleanup_before"
-require_relative "tests/formulae"
+require_relative "tests/formulae_bottle"
+require_relative "tests/formulae_dependents"
+require_relative "tests/formulae_detect"
 require_relative "tests/setup"
 require_relative "tests/tap_syntax"
 
@@ -60,6 +63,8 @@ module Homebrew
                  args.only_setup? ||
                  args.only_tap_syntax? ||
                  args.only_formulae? ||
+                 args.only_formulae_bottle? ||
+                 args.only_formulae_dependents? ||
                  args.only_cleanup_after?
       !any_only
     end
@@ -82,12 +87,32 @@ module Homebrew
                                                   verbose:   args.verbose?)
       end
 
-      if no_only_args || args.only_formulae?
-        tests[:formulae] = Tests::Formulae.new(argument, tap:       tap,
-                                                         git:       git,
-                                                         dry_run:   args.dry_run?,
-                                                         fail_fast: args.fail_fast?,
-                                                         verbose:   args.verbose?)
+      if no_only_args || args.only_formulae? || args.only_formulae_bottle? ||
+         args.only_formulae_dependents?
+        tests[:formulae_detect] = Tests::FormulaeDetect.new(argument,
+                                                            tap:       tap,
+                                                            git:       git,
+                                                            dry_run:   args.dry_run?,
+                                                            fail_fast: args.fail_fast?,
+                                                            verbose:   args.verbose?)
+      end
+
+      if no_only_args || args.only_formulae? || args.only_formulae_bottle?
+        tests[:formulae_bottle] = Tests::FormulaeBottle.new(argument,
+                                                            tap:       tap,
+                                                            git:       git,
+                                                            dry_run:   args.dry_run?,
+                                                            fail_fast: args.fail_fast?,
+                                                            verbose:   args.verbose?)
+      end
+
+      if no_only_args || args.only_formulae? || args.only_formulae_dependents?
+        tests[:formulae_dependents] = Tests::FormulaeDependents.new(argument,
+                                                                    tap:       tap,
+                                                                    git:       git,
+                                                                    dry_run:   args.dry_run?,
+                                                                    fail_fast: args.fail_fast?,
+                                                                    verbose:   args.verbose?)
       end
 
       if args.cleanup?
@@ -116,7 +141,29 @@ module Homebrew
       begin
         tests[:setup]&.run!(args: args)
         tests[:tap_syntax]&.run!(args: args)
-        tests[:formulae]&.run!(args: args)
+
+        formulae, added_formulae, deleted_formulae, built_formulae, test_default_formula = nil
+        %i[formulae_detect formulae_bottle formulae_dependents].each do |t|
+          test = tests[t]
+          next unless test
+
+          test.formulae = formulae
+          test.added_formulae = added_formulae
+          test.deleted_formulae = deleted_formulae
+          test.built_formulae = built_formulae
+          test.test_default_formula = test_default_formula
+
+          test.run!(args: args)
+
+          formulae = test.formulae
+          added_formulae = test.added_formulae
+          deleted_formulae = test.deleted_formulae
+          built_formulae = test.built_formulae
+          test_default_formula = test.test_default_formula
+        end
+
+        tests[:formulae_bottle]&.run!(args: args)
+        tests[:formulae_dependents]&.run!(args: args)
       ensure
         tests[:cleanup_after]&.run!(args: args)
       end
