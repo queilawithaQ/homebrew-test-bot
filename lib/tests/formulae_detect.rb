@@ -93,20 +93,16 @@ module Homebrew
           formula_path = tap.formula_dir.to_s
           @added_formulae +=
             diff_formulae(diff_start_sha1, diff_end_sha1, formula_path, "A")
-          @modified_formulae +=
+          modified_formulae +=
             diff_formulae(diff_start_sha1, diff_end_sha1, formula_path, "M")
           @deleted_formulae +=
             diff_formulae(diff_start_sha1, diff_end_sha1, formula_path, "D")
         end
 
-        if args.test_default_formula?
-          # Build the default test formula.
-          @test_default_formula = true
-          @modified_formulae << "testbottest"
-        end
+        # Build the default test formula.
+        modified_formulae << "testbottest" if @test_default_formula
 
-        @formulae ||= []
-        @formulae += Array(@added_formulae) + Array(@modified_formulae)
+        @formulae += @added_formulae + modified_formulae
 
         if formulae.blank? && deleted_formulae.blank? && diff_start_sha1 == diff_end_sha1
           raise UsageError, "Did not find any formulae or commits to test!"
@@ -115,7 +111,7 @@ module Homebrew
         info_header "Testing Formula changes:"
         puts <<-EOS
     added    #{@added_formulae.blank?    ? "(empty)" : @added_formulae.join(" ")}
-    modified #{@modified_formulae.blank? ? "(empty)" : @modified_formulae.join(" ")}
+    modified #{modified_formulae.blank?  ? "(empty)" : modified_formulae.join(" ")}
     deleted  #{@deleted_formulae.blank?  ? "(empty)" : @deleted_formulae.join(" ")}
         EOS
       end

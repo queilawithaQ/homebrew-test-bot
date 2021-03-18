@@ -3,14 +3,15 @@
 module Homebrew
   module Tests
     class TestFormulae < Test
-      def initialize(argument, tap:, git:, dry_run:, fail_fast:, verbose:)
+      def initialize(argument, tap:, git:, dry_run:, fail_fast:, verbose:, test_default_formula:)
         super(tap: tap, git: git, dry_run: dry_run, fail_fast: fail_fast, verbose: verbose)
 
         @argument = argument
+        @test_default_formula = test_default_formula
       end
 
-      attr_reader :argument
-      attr_accessor :formulae, :added_formulae, :deleted_formulae, :built_formulae, :test_default_formula
+      attr_reader :argument, :test_default_formula
+      attr_accessor :formulae, :added_formulae, :deleted_formulae, :skipped_or_failed_formulae
 
       private
 
@@ -52,11 +53,12 @@ module Homebrew
         end.compact
       end
 
-      def skip(formula_name)
-        puts Formatter.headline(
-          "#{Formatter.warning("SKIPPED")} #{Formatter.identifier(formula_name)}",
-          color: :yellow,
-        )
+      def skip(formula_name, extra_info: nil)
+        @skipped_or_failed_formulae << formula_name
+
+        text = "#{Formatter.warning("SKIPPED")} #{Formatter.identifier(formula_name)}"
+        text += " (#{extra_info})" if extra_info.present?
+        puts Formatter.headline(text, color: :yellow)
       end
 
       def satisfied_requirements?(formula, spec, dependency = nil)
@@ -69,9 +71,10 @@ module Homebrew
         return true if unsatisfied_requirements.empty?
 
         name = formula.full_name
-        name += " (#{spec})" unless stable_spec
-        name += " (#{dependency} dependency)" if dependency
-        skip name
+        extra_info = []
+        extra_info << spec.to_s unless stable_spec
+        extra_info << "#{dependency} dependency" if dependency
+        skip name, extra_info: extra_info.join(", ")
         puts unsatisfied_requirements.values.flatten.map(&:message)
         false
       end
@@ -95,7 +98,7 @@ module Homebrew
       def each_formulae(&block)
         changed_formulae_dependents = {}
 
-        Array(@formulae).each do |formula|
+        @formulae.each do |formula|
           begin
             formula_dependencies =
               Utils.popen_read("brew", "deps", "--full-name",
@@ -128,10 +131,43 @@ module Homebrew
           a2[1].to_i <=> a1[1].to_i
         end
         changed_formulae.map!(&:first)
-        unchanged_formulae = Array(@formulae) - changed_formulae
-        changed_formulae + unchanged_formulae
+        unchanged_formulae = @formulae - changed_formulae
+        (changed_formulae + unchanged_formulae).each(&block)
+      end
 
-        Array(formulae).each(&block)
+      def formula_should_be_tested?(formula_name)
+        return false if @skipped_or_failed_formulae.include?(formula_name)
+
+        formula = Formulary.factory(formula_name)
+        if formula.disabled?
+          ofail "#{formula.full_name} has been disabled!"
+          skip formula_name
+          return false
+        end
+        new_formula = @added_formulae.include?(formula_name)
+
+        if Hardware::CPU.arm? &&
+           ENV["HOMEBREW_REQUIRE_BOTTLED_ARM"] &&
+           !formula.bottled? &&
+           !formula.bottle_unneeded? &&
+           !new_formula
+          opoo "#{formula.full_name} has not yet been bottled on ARM!"
+          skip formula_name
+          return false
+        end
+
+        if OS.linux? &&
+           tap.present? &&
+           tap.full_name == "Homebrew/homebrew-core" &&
+           ENV["HOMEBREW_REQUIRE_BOTTLED_LINUX"] &&
+           !formula.bottled? &&
+           !formula.bottle_unneeded?
+          opoo "#{formula.full_name} has not yet been bottled on Linux!"
+          skip formula_name
+          return false
+        end
+
+        true
       end
     end
   end

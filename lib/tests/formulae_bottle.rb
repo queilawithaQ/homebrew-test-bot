@@ -17,36 +17,10 @@ module Homebrew
 
         test_header(:FormulaeBottle, method: "bottle!(#{formula_name})")
 
-        built_formulae << formula_name
+        return unless formula_should_be_tested?(formula_name)
 
         formula = Formulary.factory(formula_name)
-        if formula.disabled?
-          ofail "#{formula.full_name} has been disabled!"
-          skip formula.name
-          return
-        end
         new_formula = @added_formulae.include?(formula_name)
-
-        if Hardware::CPU.arm? &&
-           ENV["HOMEBREW_REQUIRE_BOTTLED_ARM"] &&
-           !formula.bottled? &&
-           !formula.bottle_unneeded? &&
-           !new_formula
-          opoo "#{formula.full_name} has not yet been bottled on ARM!"
-          skip formula.name
-          return
-        end
-
-        if OS.linux? &&
-           tap.present? &&
-           tap.full_name == "Homebrew/homebrew-core" &&
-           ENV["HOMEBREW_REQUIRE_BOTTLED_LINUX"] &&
-           !formula.bottled? &&
-           !formula.bottle_unneeded?
-          opoo "#{formula.full_name} has not yet been bottled on Linux!"
-          skip formula.name
-          return
-        end
 
         deps = []
         reqs = []
@@ -75,10 +49,16 @@ module Homebrew
         reqs |= formula.requirements.to_a.reject(&:optional?)
 
         tap_needed_taps(deps)
-        install_gcc_if_needed(formula, deps)
-        install_mercurial_if_needed(deps, reqs)
-        install_subversion_if_needed(deps, reqs)
-        setup_formulae_deps_instances(formula, formula_name, args: args)
+
+        dep_failed = !install_gcc_if_needed(formula, deps)
+        dep_failed ||= !install_mercurial_if_needed(deps, reqs)
+        dep_failed ||= !install_subversion_if_needed(deps, reqs)
+        if dep_failed
+          @skipped_or_failed_formulae << formula_name
+          return
+        end
+
+        setup_formulae_deps_instances(formula, formula_name)
 
         info_header "Starting build of #{formula_name}"
 
@@ -101,7 +81,10 @@ module Homebrew
         test "brew", "livecheck", *livecheck_args if formula.livecheckable? && !formula.livecheck.skip?
 
         test "brew", "audit", *audit_args unless formula.deprecated?
-        return unless install_passed
+        unless install_passed
+          @skipped_or_failed_formulae << formula_name
+          return
+        end
 
         bottle_reinstall_formula(formula, new_formula, args: args)
         test "brew", "linkage", "--test", formula_name
@@ -118,13 +101,18 @@ module Homebrew
 
         # Move bottle and don't test dependents if the formula linkage or test failed.
         if failed_linkage_or_test
+          @skipped_or_failed_formulae << formula_name
+
           if @bottle_filename
             failed_dir = "#{File.dirname(@bottle_filename)}/failed"
             FileUtils.mkdir failed_dir unless File.directory? failed_dir
             FileUtils.mv [@bottle_filename, @bottle_json_filename], failed_dir
           end
-          return
         end
+      ensure
+        cleanup_bottle_etc_var(formula) if args.cleanup?
+
+        test "brew", "uninstall", "--force", *@unchanged_dependencies if @unchanged_dependencies.present?
       end
 
       private
@@ -157,26 +145,31 @@ module Homebrew
             DevelopmentTools.clear_version_cache
             retry
           end
-          skip formula.name
+          skip formula.full_name
           puts e.message
+          return false
         end
+
+        true
       end
 
       def install_mercurial_if_needed(deps, reqs)
-        return if (deps | reqs).none? { |d| d.name == "mercurial" && d.build? }
+        return true if (deps | reqs).none? { |d| d.name == "mercurial" && d.build? }
 
         test "brew", "install", "mercurial",
              env:  { "HOMEBREW_DEVELOPER" => nil }
+        steps.last.passed?
       end
 
       def install_subversion_if_needed(deps, reqs)
-        return if (deps | reqs).none? { |d| d.name == "subversion" && d.build? }
+        return true if (deps | reqs).none? { |d| d.name == "subversion" && d.build? }
 
         test "brew", "install", "subversion",
              env:  { "HOMEBREW_DEVELOPER" => nil }
+        steps.last.passed?
       end
 
-      def setup_formulae_deps_instances(formula, formula_name, args:)
+      def setup_formulae_deps_instances(formula, formula_name)
         conflicts = formula.conflicts
         formula.recursive_dependencies.each do |dependency|
           conflicts += dependency.to_formula.conflicts
@@ -226,90 +219,7 @@ module Homebrew
                .split("\n")
         build_dependencies = dependencies - runtime_or_test_dependencies
         @unchanged_build_dependencies = build_dependencies - @formulae
-
-        # Test reverse dependencies for linux-only formulae in linuxbrew-core.
-        if args.keep_old? && formula.requirements.exclude?(LinuxRequirement.new)
-          @testable_dependents = @bottled_dependents = @source_dependents = []
-          return
-        end
-
-        info_header "Determining dependents..."
-
-        build_dependents_from_source_allowlist = %w[
-          cabal-install
-          docbook-xsl
-          erlang
-          ghc
-          go
-          ocaml
-          ocaml-findlib
-          ocaml-num
-          openjdk
-          rust
-        ]
-
-        uses_args = %w[--formula --include-build --include-test]
-        uses_args << "--recursive" unless args.skip_recursive_dependents?
-        dependents = with_env(HOMEBREW_STDERR: "1") do
-          Utils.safe_popen_read("brew", "uses", *uses_args, formula_name)
-               .split("\n")
-        end
-        dependents -= @formulae
-        dependents = dependents.map { |d| Formulary.factory(d) }
-
-        dependents = dependents.zip(dependents.map do |f|
-          if args.skip_recursive_dependents?
-            f.deps
-          else
-            begin
-              f.recursive_dependencies
-            rescue TapFormulaUnavailableError => e
-              raise if e.tap.installed?
-
-              e.tap.clear_cache
-              safe_system "brew", "tap", e.tap.name
-              retry
-            end
-          end.reject(&:optional?)
-        end)
-
-        # Defer formulae which could be tested later
-        # i.e. formulae that also depend on something else yet to be built in this test run.
-        dependents.select! do |_, deps|
-          still_to_test = @formulae - @built_formulae
-          (deps.map { |d| d.to_formula.full_name } & still_to_test).empty?
-        end
-
-        # Split into dependents that we could potentially be building from source and those
-        # we should not. The criteria is that it depends on a formula in the allowlist and
-        # that formula has been, or will be, built in this test run.
-        @source_dependents, dependents = dependents.partition do |_, deps|
-          deps.any? do |d|
-            full_name = d.to_formula.full_name
-
-            next false unless build_dependents_from_source_allowlist.include?(full_name)
-
-            @formulae.include?(full_name)
-          end
-        end
-
-        # From the non-source list, get rid of any dependents we are only a build dependency to
-        dependents.select! do |_, deps|
-          deps.reject { |d| d.build? && !d.test? }
-              .map(&:to_formula)
-              .include?(formula)
-        end
-
-        dependents = dependents.transpose.first.to_a
-        @source_dependents = @source_dependents.transpose.first.to_a
-
-        @testable_dependents = @source_dependents.select(&:test_defined?)
-        @bottled_dependents = with_env(HOMEBREW_SKIP_OR_LATER_BOTTLES: "1") do
-          dependents.select(&:bottled?)
-        end
-        @testable_dependents += @bottled_dependents.select(&:test_defined?)
       end
-
 
       def cleanup_bottle_etc_var(formula)
         bottle_prefix = formula.opt_prefix/".bottle"

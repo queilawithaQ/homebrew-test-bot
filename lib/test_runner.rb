@@ -90,29 +90,32 @@ module Homebrew
       if no_only_args || args.only_formulae? || args.only_formulae_bottle? ||
          args.only_formulae_dependents?
         tests[:formulae_detect] = Tests::FormulaeDetect.new(argument,
-                                                            tap:       tap,
-                                                            git:       git,
-                                                            dry_run:   args.dry_run?,
-                                                            fail_fast: args.fail_fast?,
-                                                            verbose:   args.verbose?)
+                                                            tap:                  tap,
+                                                            git:                  git,
+                                                            dry_run:              args.dry_run?,
+                                                            fail_fast:            args.fail_fast?,
+                                                            verbose:              args.verbose?,
+                                                            test_default_formula: args.test_default_formula?)
       end
 
       if no_only_args || args.only_formulae? || args.only_formulae_bottle?
         tests[:formulae_bottle] = Tests::FormulaeBottle.new(argument,
-                                                            tap:       tap,
-                                                            git:       git,
-                                                            dry_run:   args.dry_run?,
-                                                            fail_fast: args.fail_fast?,
-                                                            verbose:   args.verbose?)
+                                                            tap:                  tap,
+                                                            git:                  git,
+                                                            dry_run:              args.dry_run?,
+                                                            fail_fast:            args.fail_fast?,
+                                                            verbose:              args.verbose?,
+                                                            test_default_formula: args.test_default_formula?)
       end
 
       if no_only_args || args.only_formulae? || args.only_formulae_dependents?
         tests[:formulae_dependents] = Tests::FormulaeDependents.new(argument,
-                                                                    tap:       tap,
-                                                                    git:       git,
-                                                                    dry_run:   args.dry_run?,
-                                                                    fail_fast: args.fail_fast?,
-                                                                    verbose:   args.verbose?)
+                                                                    tap:                  tap,
+                                                                    git:                  git,
+                                                                    dry_run:              args.dry_run?,
+                                                                    fail_fast:            args.fail_fast?,
+                                                                    verbose:              args.verbose?,
+                                                                    test_default_formula: args.test_default_formula?)
       end
 
       if args.cleanup?
@@ -142,28 +145,26 @@ module Homebrew
         tests[:setup]&.run!(args: args)
         tests[:tap_syntax]&.run!(args: args)
 
-        formulae, added_formulae, deleted_formulae, built_formulae, test_default_formula = nil
-        %i[formulae_detect formulae_bottle formulae_dependents].each do |t|
+        formulae = []
+        added_formulae = []
+        deleted_formulae = []
+        skipped_or_failed_formulae = []
+        [:formulae_detect, :formulae_bottle, :formulae_dependents].each do |t|
           test = tests[t]
           next unless test
 
           test.formulae = formulae
           test.added_formulae = added_formulae
           test.deleted_formulae = deleted_formulae
-          test.built_formulae = built_formulae
-          test.test_default_formula = test_default_formula
+          test.skipped_or_failed_formulae = skipped_or_failed_formulae
 
           test.run!(args: args)
 
           formulae = test.formulae
           added_formulae = test.added_formulae
           deleted_formulae = test.deleted_formulae
-          built_formulae = test.built_formulae
-          test_default_formula = test.test_default_formula
+          skipped_or_failed_formulae = test.skipped_or_failed_formulae
         end
-
-        tests[:formulae_bottle]&.run!(args: args)
-        tests[:formulae_dependents]&.run!(args: args)
       ensure
         tests[:cleanup_after]&.run!(args: args)
       end
