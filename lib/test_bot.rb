@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require_relative "step"
-require_relative "test_ci_upload"
 require_relative "test_runner"
 
 require "date"
@@ -120,19 +119,19 @@ module Homebrew
 
       ENV["HOMEBREW_GIT_NAME"] = args.git_name || "BrewTestBot"
       ENV["HOMEBREW_GIT_EMAIL"] = args.git_email ||
-                                  "homebrew-test-bot@lists.sfconservancy.org"
+                                  "1589480+BrewTestBot@users.noreply.github.com"
 
-      return TestCiUpload.run!(tap, args: args) if args.ci_upload?
+      if args.ci_upload?
+        odeprecated "brew test-bot --ci-upload", "brew pr-upload"
+        require_relative "test_ci_upload"
+        return TestCiUpload.run!(tap, args: args)
+      end
 
       Homebrew.failed = !TestRunner.run!(tap, git: GIT, args: args)
     ensure
       if HOMEBREW_CACHE.exist?
-        if args.clean_cache?
-          HOMEBREW_CACHE.children.each(&:rmtree)
-        else
-          Dir.glob("*.bottle*.tar.gz") do |bottle_file|
-            FileUtils.rm_f HOMEBREW_CACHE/bottle_file
-          end
+        Dir.glob("*.bottle*.tar.gz") do |bottle_file|
+          FileUtils.rm_f HOMEBREW_CACHE/bottle_file
         end
       end
     end
